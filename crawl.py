@@ -74,37 +74,61 @@ def fetch(url):
   return pageContent, parser.foundLinks
 
 
+async def _parseStream(stream):
+  header = stream.headers
+  try:
+    contentSize = int(header["Content-Length"])
+  except Exception:
+    contentSize = 0
+
+  print("size: {}".format(contentSize))
+
+  firstChunk = await stream.content.read(1024)
+
+  if canDecode(firstChunk, "utf-8"):
+    # print("good utf-8")
+    # print(firstChunk.decode("utf-8"))
+    content = firstChunk + await stream.content.read()
+    return doDecode(content, "utf-8")
+  else:
+    # print("not good utf-8")
+    return ""
+
+
+# async def fetchAsync(url, loop):
+#   async with aiohttp.ClientSession(loop = loop) as session:
+#     async with session.get(url) as page:
+#       try:
+#         pageContent = await _parseStream(page)
+#       finally:
+#         page.close()
+
+#   parser = MyHTMLParser(url)
+#   parser.feed(pageContent)
+#   # print("found {} links".format(len(parser.foundLinks)))
+#   # for lk in parser.foundLinks: print(lk)
+#   return pageContent, parser.foundLinks
+
+
+async def _safeDownloadContent(url, session):
+  try:
+    page = await session.get(url)
+
+    try:
+      return await _parseStream(page)
+    finally:
+      page.close()
+
+  except Exception as ex:
+    print(type(ex), ex)
+
+  return ""
+
 
 async def fetchAsync(url, loop):
   pageContent = ""
   async with aiohttp.ClientSession(loop = loop) as session:
-    async with session.get(url) as page:
-    # with request.urlopen(url) as page:
-      # print(page.url)
-      # print(page.getcode())
-      # print(page.info())
-
-      header = page.headers
-      try:
-        contentSize = int(header["Content-Length"])
-      except Exception:
-        contentSize = 0
-
-      print("size: {}".format(contentSize))
-
-      firstChunk = await page.content.read(1024)
-
-      if canDecode(firstChunk, "utf-8"):
-        # print("good utf-8")
-        # print(firstChunk.decode("utf-8"))
-        pageContent = firstChunk + await page.content.read()
-        pageContent = doDecode(pageContent, "utf-8")
-      else:
-        # print("not good utf-8")
-        pass
-
-      page.close()
-
+    pageContent = await _safeDownloadContent(url, session)
 
   parser = MyHTMLParser(url)
   parser.feed(pageContent)
@@ -113,10 +137,16 @@ async def fetchAsync(url, loop):
   return pageContent, parser.foundLinks
 
 
+
 urls = [
 "https://docs.python.org/3/library/urllib.request.html#module-urllib.response",
+"https://github.com/aio-libs/aiohttp/blob/master/aiohttp/streams.py",
 "https://download.qt.io/official_releases/qt/5.11/5.11.0/qt-opensource-windows-x86-pdb-files-uwp-5.11.0.7z",
 "https://bpy.wikipedia.org/wiki/%E0%A6%9C%E0%A6%BE%E0%A6%AA%E0%A6%BE%E0%A6%A8",
+"https://stackoverflow.com/questions/9110593/asynchronous-requests-with-python-requests",
+"https://www.youtube.com/watch?v=WiQYjPdq_qI",
+"https://www.youtube.com/watch?v=FD_-b06JJtE",
+"https://www.jytrhgf.com/watch?v=FD_-b06JJtE",
 ]
 
 
