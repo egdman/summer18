@@ -1,6 +1,8 @@
 from urllib import request, parse
 from html.parser import HTMLParser
+import os
 import asyncio
+from asyncio import Queue
 import aiohttp
 
 class MyHTMLParser(HTMLParser):
@@ -126,6 +128,9 @@ async def _safeDownloadContent(url, session):
 
 
 async def fetchAsync(url, loop):
+  print(url)
+  scheme, netloc = parse.urlsplit(url)[:2]
+
   pageContent = ""
   async with aiohttp.ClientSession(loop = loop) as session:
     pageContent = await _safeDownloadContent(url, session)
@@ -134,7 +139,15 @@ async def fetchAsync(url, loop):
   parser.feed(pageContent)
   # print("found {} links".format(len(parser.foundLinks)))
   # for lk in parser.foundLinks: print(lk)
-  return pageContent, parser.foundLinks
+  def join(links):
+    for lk in links:
+      parsed = parse.urlsplit(lk)
+      if parsed.netloc == "":
+        yield parse.urlunsplit((scheme, netloc, parsed.path, parsed.query, parsed.fragment))
+      else:
+        yield lk
+
+  return url, list(join(parser.foundLinks))
 
 
 
@@ -146,18 +159,92 @@ urls = [
 "https://stackoverflow.com/questions/9110593/asynchronous-requests-with-python-requests",
 "https://www.youtube.com/watch?v=WiQYjPdq_qI",
 "https://www.youtube.com/watch?v=FD_-b06JJtE",
-"https://www.jytrhgf.com/watch?v=FD_-b06JJtE",
+"https://www.jytrhgf.com/stuff",
 ]
+
+from appdirs import user_cache_dir
+from argparse import ArgumentParser
+
+parser = ArgumentParser()
+parser.add_argument("url", type=str, help="URL to explore")
+
+
+def filenames(inputPath):
+  for _, _, filenames in os.walk(inputPath):
+    for filename in filenames:
+      yield filename
+
+
+class Spider(object):
+  def __init__(self, url, rootDir):
+    # read downloaded urls
+    self.down = set(filenames(rootDir))
+
+    # read pending urls
+    self.cache = os.path.join(user_cache_dir("summer18"), "pending.links")
+    try:
+      with open(self.cache, 'r') as stream:
+        startUrls = set(stream.read().decode("utf-8").strip().split())
+    except (OSError, UnicodeDecodeError):
+      startUrls = set([url])
+
+    self.pending = set()
+    self.dir = rootDir
+    self.queue = Queue()
+    for lk in startUrls:
+      self.queue.put_nowait(lk)
+
+
+  async def run(self, eventLoop):
+    def whenDownloaded(future):
+      thisLink, nextLinks = future.result()
+      self.pending.remove(thisLink)
+      self.down.add(thisLink)
+      newLinks = (link for link in nextLinks if link not in self.down)
+      for link in newLinks:
+        self.queue.put_nowait(link)
+
+
+    while True:
+      link = await self.queue.get()
+
+      if link not in self.pending and link not in self.down:
+        self.pending.add(link)
+        future = asyncio.ensure_future(fetchAsync(link, eventLoop))
+        future.add_done_callback(whenDownloaded)
+
+
+
 
 
 def main():
-  loop = asyncio.get_event_loop()
-  futures = list(asyncio.ensure_future(fetchAsync(url, loop)) for url in urls)
-  loop.run_until_complete(asyncio.gather(*futures))
+  args = parser.parse_args()
 
-  print("=======")
-  for f in futures:
-    content, links = f.result()
-    print(len(links), "links")
+  downloadTo = parse.urlsplit(args.url).netloc
+  print(downloadTo)
+
+  if os.path.exists(downloadTo):
+    pass
+  else:
+    os.mkdir(downloadTo)
+
+
+  # read downloaded urls
+  downloadedLinks = set(filenames(downloadTo))
+
+  # read pending urls
+  cacheFile = os.path.join(user_cache_dir("summer18"), "pending.links")
+  try:
+    with open(cacheFile, 'r') as stream:
+      pendingLinks = set(stream.read().decode("utf-8").strip().split())
+  except (OSError, UnicodeDecodeError):
+    pendingLinks = set([downloadTo])
+
+  # TODO add exception handling like KeyboardInterrupt
+  spider = Spider(args.url, downloadTo)
+  loop = asyncio.get_event_loop()
+  future = asyncio.ensure_future(spider.run(loop))
+  loop.run_until_complete(future)
+
 
 if __name__ == '__main__': main()
