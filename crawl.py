@@ -18,8 +18,17 @@ class MyHTMLParser(HTMLParser):
     link = next(hrefs, None)
     if link:
       url = parse.urlsplit(link)
-      if url.netloc in ("", self.root.netloc):
+      if url.netloc == "":
+        r = self.root
+        print("{}, frag: {}".format(link, url.fragment))
+        self.foundLinks.append(parse.urlunsplit(
+          (r.scheme, r.netloc, url.path, url.query, "")
+        ))
+      elif url.netloc == self.root.netloc:
         self.foundLinks.append(link)
+
+      # if url.netloc in ("", self.root.netloc):
+      #   self.foundLinks.append(link)
 
 
 def canDecode(data, enc):
@@ -83,7 +92,7 @@ async def _parseStream(stream):
   except Exception:
     contentSize = 0
 
-  print("size: {}".format(contentSize))
+  # print("size: {}".format(contentSize))
 
   firstChunk = await stream.content.read(1024)
 
@@ -139,15 +148,15 @@ async def fetchAsync(url, loop):
   parser.feed(pageContent)
   # print("found {} links".format(len(parser.foundLinks)))
   # for lk in parser.foundLinks: print(lk)
-  def join(links):
-    for lk in links:
-      parsed = parse.urlsplit(lk)
-      if parsed.netloc == "":
-        yield parse.urlunsplit((scheme, netloc, parsed.path, parsed.query, parsed.fragment))
-      else:
-        yield lk
+  # def makeAbsolute(links):
+  #   for lk in links:
+  #     parsed = parse.urlsplit(lk)
+  #     if parsed.netloc == "":
+  #       yield parse.urlunsplit((scheme, netloc, parsed.path, parsed.query, parsed.fragment))
+  #     else:
+  #       yield lk
 
-  return url, list(join(parser.foundLinks))
+  return url, parser.foundLinks
 
 
 
@@ -196,6 +205,7 @@ class Spider(object):
 
 
   async def run(self, eventLoop):
+    self.n = 0
     def whenDownloaded(future):
       thisLink, nextLinks = future.result()
       self.pending.remove(thisLink)
@@ -204,17 +214,26 @@ class Spider(object):
       for link in newLinks:
         self.queue.put_nowait(link)
 
+      self.n -= 1
 
-    while True:
+
+    while self.n > 0 or not self.queue.empty():
+
+      if self.n >= 100: # too many tasks
+        await asyncio.sleep(.1)
+        continue
+
       link = await self.queue.get()
 
       if link not in self.pending and link not in self.down:
         self.pending.add(link)
         future = asyncio.ensure_future(fetchAsync(link, eventLoop))
         future.add_done_callback(whenDownloaded)
+        self.n += 1
+        # print(self.n)
+        # await asyncio.sleep(.02)
 
-
-
+    print("done")
 
 
 def main():
