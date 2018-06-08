@@ -1,9 +1,19 @@
+import os
 from urllib import request, parse
 from html.parser import HTMLParser
-import os
 import asyncio
 from asyncio import Queue
 import aiohttp
+
+import re
+def noSlash(url):
+  return re.sub(r'/', '..', re.sub(r'^(\w*?)://', '', url))
+
+
+def defrag(link):
+  link, _ = parse.urldefrag(link)
+  return link
+
 
 class MyHTMLParser(HTMLParser):
   def __init__(self, root):
@@ -12,23 +22,29 @@ class MyHTMLParser(HTMLParser):
     self.foundLinks = []
 
 
+  def toAbsolute(self, link):
+    if link.netloc == "" and not link.path.startswith("/"):
+      return (self.root.scheme, self.root.netloc, os.path.join(self.root.path, link.path)) + link[3:]
+
+    if (link.netloc == "" and link.path.startswith("/")) or link.netloc == self.root.netloc:
+      if os.path.commonprefix((self.root.path, link.path)) == self.root.path:
+        return (self.root.scheme, self.root.netloc, link.path) + link[3:]
+      else:
+        return None
+    # if link.netloc == self.root.netloc:
+    #   if os.path.commonprefix(self.root.path, link.path) == self.root.path:
+    #     return (self.root.scheme, self.root.netloc, link.path) + link[3:]
+    #   else:
+    #     return None
+
+
   def handle_starttag(self, tag, attrs):
-    # if tag == 'a':
     hrefs = (value for name, value in attrs if name == "href")
     link = next(hrefs, None)
     if link:
-      url = parse.urlsplit(link)
-      if url.netloc == "":
-        r = self.root
-        print("{}, frag: {}".format(link, url.fragment))
-        self.foundLinks.append(parse.urlunsplit(
-          (r.scheme, r.netloc, url.path, url.query, "")
-        ))
-      elif url.netloc == self.root.netloc:
-        self.foundLinks.append(link)
-
-      # if url.netloc in ("", self.root.netloc):
-      #   self.foundLinks.append(link)
+      link = self.toAbsolute(parse.urlsplit(defrag(link)))
+      if link:
+        self.foundLinks.append(parse.urlunsplit(link))
 
 
 def canDecode(data, enc):
@@ -52,37 +68,37 @@ def doDecode(data, enc):
     return ""
 
 
-def fetch(url):
-  parser = MyHTMLParser(url)
+# def fetch(url):
+#   parser = MyHTMLParser(url)
 
-  pageContent = ""
-  with request.urlopen(url) as page:
-    # print(page.url)
-    # print(page.getcode())
-    # print(page.info())
+#   pageContent = ""
+#   with request.urlopen(url) as page:
+#     # print(page.url)
+#     # print(page.getcode())
+#     # print(page.info())
 
-    header = page.info()
-    try:
-      contentSize = int(header["Content-Length"])
-    except Exception:
-      contentSize = 0
+#     header = page.info()
+#     try:
+#       contentSize = int(header["Content-Length"])
+#     except Exception:
+#       contentSize = 0
 
-    print("size: {}".format(contentSize))
+#     print("size: {}".format(contentSize))
 
-    firstChunk = page.read(1024)
+#     firstChunk = page.read(1024)
 
-    if canDecode(firstChunk, "utf-8"):
-      # print("good utf-8")
-      # print(firstChunk.decode("utf-8"))
-      pageContent = firstChunk + page.read()
-      pageContent = doDecode(pageContent, "utf-8")
-    else:
-      # print("not good utf-8")
-      pass
+#     if canDecode(firstChunk, "utf-8"):
+#       # print("good utf-8")
+#       # print(firstChunk.decode("utf-8"))
+#       pageContent = firstChunk + page.read()
+#       pageContent = doDecode(pageContent, "utf-8")
+#     else:
+#       # print("not good utf-8")
+#       pass
 
-  parser.feed(pageContent)
-  # for lk in parser.foundLinks: print(lk)
-  return pageContent, parser.foundLinks
+#   parser.feed(pageContent)
+#   # for lk in parser.foundLinks: print(lk)
+#   return pageContent, parser.foundLinks
 
 
 async def _parseStream(stream):
@@ -136,15 +152,13 @@ async def _safeDownloadContent(url, session):
   return ""
 
 
-async def fetchAsync(url, loop):
+async def fetchAsync(url, root, eventLoop):
   print(url)
-  scheme, netloc = parse.urlsplit(url)[:2]
-
   pageContent = ""
-  async with aiohttp.ClientSession(loop = loop) as session:
+  async with aiohttp.ClientSession(loop = eventLoop) as session:
     pageContent = await _safeDownloadContent(url, session)
 
-  parser = MyHTMLParser(url)
+  parser = MyHTMLParser(root)
   parser.feed(pageContent)
   # print("found {} links".format(len(parser.foundLinks)))
   # for lk in parser.foundLinks: print(lk)
@@ -186,6 +200,8 @@ def filenames(inputPath):
 
 class Spider(object):
   def __init__(self, url, rootDir):
+    self.root = url
+
     # read downloaded urls
     self.down = set(filenames(rootDir))
 
@@ -204,32 +220,46 @@ class Spider(object):
       self.queue.put_nowait(lk)
 
 
+  async def doCaching(self):
+    while True:
+      await asyncio.sleep(5)
+      newLinks = []
+      while not self.queue.empty():
+        newLinks.append(self.queue.get_nowait())
+
+      print("in queue   : " + str(len(newLinks)) + " links")
+      print("in pending : " + str(len(self.pending)) + " links")
+      for link in newLinks:
+        self.queue.put_nowait(link)
+
+
   async def run(self, eventLoop):
-    self.n = 0
-    def whenDownloaded(future):
-      thisLink, nextLinks = future.result()
+    asyncio.ensure_future(self.doCaching())
+
+    def whenDownloaded(task):
+      thisLink, nextLinks = task.result()
       self.pending.remove(thisLink)
       self.down.add(thisLink)
       newLinks = (link for link in nextLinks if link not in self.down)
       for link in newLinks:
         self.queue.put_nowait(link)
 
-      self.n -= 1
 
+    while len(self.pending) or not self.queue.empty():
 
-    while self.n > 0 or not self.queue.empty():
-
-      if self.n >= 100: # too many tasks
-        await asyncio.sleep(.1)
+      if len(self.pending) >= 100: # too many tasks
+        await asyncio.sleep(.01)
         continue
 
+      if len(self.pending) == 0 and self.queue.empty():
+        break
       link = await self.queue.get()
 
       if link not in self.pending and link not in self.down:
         self.pending.add(link)
-        future = asyncio.ensure_future(fetchAsync(link, eventLoop))
-        future.add_done_callback(whenDownloaded)
-        self.n += 1
+        task = asyncio.ensure_future(fetchAsync(link, self.root, eventLoop))
+        task.add_done_callback(whenDownloaded)
+
         # print(self.n)
         # await asyncio.sleep(.02)
 
@@ -239,7 +269,7 @@ class Spider(object):
 def main():
   args = parser.parse_args()
 
-  downloadTo = parse.urlsplit(args.url).netloc
+  downloadTo = noSlash(args.url)
   print(downloadTo)
 
   if os.path.exists(downloadTo):
