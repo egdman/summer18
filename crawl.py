@@ -86,7 +86,7 @@ async def safeDownloadContent(url, session, filename):
       page.close()
 
   except Exception as ex:
-    print(type(ex), ex)
+    print(type(ex), ex, url)
 
   return ""
 
@@ -134,8 +134,6 @@ class Spider(object):
     self.domain = parse.urlunsplit(parse.urlsplit(rootUrl)[:2] + ('','',''))
     self.rootDir = rootDir
 
-    print("root   " +rootUrl)
-    print("domain " +self.domain)
     # read downloaded urls
     self.down = set(filenames(rootDir))
     self.pending = set()
@@ -164,16 +162,17 @@ class Spider(object):
   async def doCaching(self):
     while True:
       await asyncio.sleep(2)
+
       started = clock()
-      foundLinks = []
+      foundLinks = set()
       while not self.queue.empty():
-        foundLinks.append(self.queue.get_nowait())
+        foundLinks.add(self.queue.get_nowait())
 
       for link in foundLinks:
         self.queue.put_nowait(link)
 
-      # foundLinks = set(foundLinks).union(self.pending)
-      foundLinks += self.pending
+      foundLinks = foundLinks.union(self.pending)
+
       print("down:   {} links".format(len(self.down)))
       with open(self.cache, 'w') as stream:
         for link in foundLinks: stream.write(link + '\n')
@@ -217,7 +216,6 @@ def main():
   rootUrl = canonize(args.url)  
   downloadTo = makeFilename(rootUrl)
 
-  print(rootUrl)
   print(downloadTo)
 
   if os.path.exists(downloadTo):
