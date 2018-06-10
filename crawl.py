@@ -122,32 +122,34 @@ def filenames(inputPath):
 
 
 class Spider(object):
-  def __init__(self, rootUrl, rootDir, _):
+  def __init__(self, rootUrl, rootDir, tempDir):
     self.root = rootUrl
     self.rootDir = rootDir
-    self.tempDir = rootDir + ".tempo"
-
-    if not os.path.exists(rootDir):
-      os.mkdir(rootDir)
-
-    if not os.path.exists(self.tempDir):
-      os.makedirs(self.tempDir)
-    # self.cache = cacheFilename
+    self.tempDir = tempDir
 
     self.queue = Queue()
     self.queue.put_nowait(rootUrl)
     self.pending = set()
-    self.down = set()
+    self.down = set(filenames(self.rootDir))
 
-    # read downloaded urls
+    # read cached links
+    try:
+      uniqLinks = set()
+      for linkFile in filenames(self.tempDir):
+        if not linkFile.endswith(".links"):
+          continue
 
-    # read pending urls
-    # try:
-    #   with open(self.cache, 'r') as stream:
-    #     for link in stream.read().strip().split():
-    #       self.queue.put_nowait(link)
-    # except OSError:
-    #   pass
+        with open(os.path.join(self.tempDir, linkFile), 'r') as stream:
+          for link in stream.read().strip().splitlines():
+            uniqLinks.add(link)
+
+      for link in uniqLinks:
+        self.queue.put_nowait(link)
+      print("read {} cached links".format(len(uniqLinks)))
+
+    except OSError:
+      pass
+
 
   async def cleanQueue(self):
     while True:
@@ -174,7 +176,7 @@ class Spider(object):
       thisLink, nextLinks = task.result()
 
       self.pending.remove(thisLink)
-      self.down.add(thisLink)
+      self.down.add(makeFilename(thisLink))
       newLinks = (link for link in nextLinks if not \
         os.path.exists(os.path.join(self.rootDir, makeFilename(link))))
 
@@ -205,11 +207,7 @@ class Spider(object):
 
     monitorTask.cancel()
     cleanTask.cancel()
-
-    try:
-      shutil.rmtree(self.tempDir)
-    except OSError as ex:
-      print(ex)
+    print("{} down".format(len(self.down)))
 
 
 def main():
@@ -218,30 +216,32 @@ def main():
 
   args = parser.parse_args()
   rootUrl = canonize(args.url)  
+
   downloadTo = makeFilename(rootUrl)
-
-  try:
-    from appdirs import user_cache_dir
-    cacheDir = user_cache_dir("summer18")
-    if not os.path.exists(cacheDir):
-      os.makedirs(cacheDir)
-    cacheTo = os.path.join(cacheDir, downloadTo + ".cache")
-  except (ImportError, OSError):
-    cacheTo = os.path.join("./", downloadTo + ".cache")
-
   print("downloading to: " + downloadTo)
-  print("    caching to: " + cacheTo)
+  if not os.path.exists(downloadTo):
+      os.mkdir(downloadTo)
 
+  tempDir = downloadTo + ".temp"
+  if not os.path.exists(tempDir):
+      os.makedirs(tempDir)
 
   def handler(loop, context):
     pass
 
   started = clock()
-  spider = Spider(rootUrl, downloadTo, cacheTo)
+  spider = Spider(rootUrl, downloadTo, tempDir)
   loop = asyncio.get_event_loop()
   loop.set_exception_handler(handler)
   try:
     loop.run_until_complete(spider.run(loop))
+
+    # cleanup temp directory
+    try:
+      shutil.rmtree(tempDir)
+    except OSError as ex:
+      print(ex)
+
     print("done")
   except KeyboardInterrupt as ex:
     loop.call_exception_handler({"exception": ex})
