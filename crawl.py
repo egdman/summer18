@@ -30,7 +30,7 @@ class MyHTMLParser(HTMLParser):
 
   def handle_starttag(self, _, attrs):
     self.foundLinks.extend(
-      (value for name, value in attrs if name in ("href", "src")))
+      (value for name, value in attrs if value and name in ("href", "src")))
 
 
 def canDecode(data, enc):
@@ -104,23 +104,6 @@ async def fetchAsync(url, root, domain, eventLoop, filename):
   return url, set(link for link in absLinks if os.path.commonprefix((link, root)) == root)
 
 
-urls = [
-"https://docs.python.org/3/library/urllib.request.html#module-urllib.response",
-"https://github.com/aio-libs/aiohttp/blob/master/aiohttp/streams.py",
-"https://download.qt.io/official_releases/qt/5.11/5.11.0/qt-opensource-windows-x86-pdb-files-uwp-5.11.0.7z",
-"https://bpy.wikipedia.org/wiki/%E0%A6%9C%E0%A6%BE%E0%A6%AA%E0%A6%BE%E0%A6%A8",
-"https://stackoverflow.com/questions/9110593/asynchronous-requests-with-python-requests",
-"https://www.youtube.com/watch?v=WiQYjPdq_qI",
-"https://www.youtube.com/watch?v=FD_-b06JJtE",
-"https://www.jytrhgf.com/stuff",
-]
-
-
-
-parser = ArgumentParser()
-parser.add_argument("url", type=str, help="URL to explore")
-
-
 def filenames(inputPath):
   for _, _, filenames in os.walk(inputPath):
     for filename in filenames:
@@ -180,8 +163,7 @@ class Spider(object):
   async def runCaching(self):
     while True:
       await asyncio.sleep(2)
-      if not self.writeCache():
-        break
+      self.writeCache()
 
 
   async def run(self, eventLoop):
@@ -222,6 +204,9 @@ class Spider(object):
 
 
 def main():
+  parser = ArgumentParser()
+  parser.add_argument("url", type=str, help="URL to explore")
+
   args = parser.parse_args()
   rootUrl = canonize(args.url)  
   downloadTo = makeFilename(rootUrl)
