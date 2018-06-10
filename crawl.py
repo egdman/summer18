@@ -1,6 +1,7 @@
 import sys
 import os
 import re
+import shutil
 import asyncio
 import aiohttp
 from time import clock
@@ -59,6 +60,7 @@ async def downloadAsync(istream, filename):
 
   firstChunk = await istream.content.read(chunkSz)
   if not canDecode(firstChunk, "utf-8"):
+    with open(filename, 'wb'): pass
     return ""
 
   fullContent = bytes()
@@ -92,16 +94,26 @@ async def download_noexcept(url, session, filename):
 
 
 async def fetchAsync(url, root, eventLoop, filename):
-  # print(url)
+  # dl to temp file
+  tempFilename = filename + ".__"
   pageText = ""
   async with aiohttp.ClientSession(loop = eventLoop) as session:
-    pageText = await download_noexcept(url, session, filename)
+    pageText = await download_noexcept(url, session, tempFilename)
 
+  # parse text to find links
   parser = MyHTMLParser()
   parser.feed(pageText)
-
   absLinks = (defrag(parse.urljoin(url, link)) for link in parser.foundLinks)
-  return url, set(link for link in absLinks if os.path.commonprefix((link, root)) == root)
+  absLinks = set(link for link in absLinks if os.path.commonprefix((link, root)) == root)
+
+  # write links to disk
+  linkFilename = tempFilename + ".links"
+  with open(linkFilename, "w") as stream:
+    stream.write('\n'.join(absLinks))
+  
+  # rename file
+  shutil.move(tempFilename, filename)
+  return url, absLinks
 
 
 def filenames(inputPath):
@@ -111,61 +123,68 @@ def filenames(inputPath):
 
 
 class Spider(object):
-  def __init__(self, rootUrl, rootDir, cacheFilename):
+  def __init__(self, rootUrl, rootDir, _):
     self.root = rootUrl
     self.rootDir = rootDir
-    self.cache = cacheFilename
+    # self.cache = cacheFilename
 
     self.queue = Queue()
     self.queue.put_nowait(rootUrl)
+    self.pending = set()
 
     # read downloaded urls
-    self.down = set(filenames(rootDir))
+    # self.down = set(filenames(rootDir))
 
     # read pending urls
-    self.pending = set()
-    try:
-      with open(self.cache, 'r') as stream:
-        for link in stream.read().strip().split():
-          self.queue.put_nowait(link)
-    except OSError:
-      pass
+    # try:
+    #   with open(self.cache, 'r') as stream:
+    #     for link in stream.read().strip().split():
+    #       self.queue.put_nowait(link)
+    # except OSError:
+    #   pass
 
 
-  def writeCache(self):
-    started = clock()
-    foundLinks = set()
-    while not self.queue.empty():
-      foundLinks.add(self.queue.get_nowait())
+  # def writeCache(self):
+  #   started = clock()
+  #   foundLinks = set()
+  #   while not self.queue.empty():
+  #     foundLinks.add(self.queue.get_nowait())
 
-    for link in foundLinks:
-      self.queue.put_nowait(link)
+  #   for link in foundLinks:
+  #     self.queue.put_nowait(link)
 
-    foundLinks = foundLinks.union(self.pending)
+  #   foundLinks = foundLinks.union(self.pending)
 
-    print("down:   {} links".format(len(self.down)))
-    with open(self.cache, 'w') as stream:
-      stream.write('\n'.join(foundLinks))
+  #   # print("down:   {} links".format(len(self.down)))
+  #   with open(self.cache, 'w') as stream:
+  #     stream.write('\n'.join(foundLinks))
 
-    print("cached {} in {:.2f} ms".format(len(foundLinks), 1000*(clock() - started)))
-    return len(foundLinks)
+  #   print("cached {} in {:.2f} ms".format(len(foundLinks), 1000*(clock() - started)))
+  #   return len(foundLinks)
 
 
-  async def runCaching(self):
+  # async def runCaching(self):
+  #   while True:
+  #     await asyncio.sleep(2)
+  #     self.writeCache()
+
+  async def monitor(self):
     while True:
       await asyncio.sleep(2)
-      self.writeCache()
-
+      print("pending {} links".format(len(self.pending)))
+  
 
   async def run(self, eventLoop):
-    cachingTask = asyncio.ensure_future(self.runCaching())
+    monitorTask = asyncio.ensure_future(self.monitor())
 
     def whenDownloaded(task):
       thisLink, nextLinks = task.result()
 
-      self.down.add(makeFilename(thisLink))
       self.pending.remove(thisLink)
-      newLinks = (link for link in nextLinks if makeFilename(link) not in self.down)
+      newLinks = list(link for link in nextLinks if not \
+        os.path.exists(os.path.join(self.rootDir, makeFilename(link))))
+
+      # print(str(len(nextLinks)) + " : " + str(len(newLinks)))
       for link in newLinks:
         self.queue.put_nowait(link)
 
@@ -190,8 +209,8 @@ class Spider(object):
       else:
         await asyncio.sleep(.01)
 
-    self.writeCache()
-    cachingTask.cancel()
+    # self.writeCache()
+    monitorTask.cancel()
 
 
 def main():
