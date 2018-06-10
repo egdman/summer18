@@ -92,7 +92,7 @@ async def download_noexcept(url, session, filename):
   return ""
 
 
-async def fetchAsync(url, root, domain, eventLoop, filename):
+async def fetchAsync(url, root, eventLoop, filename):
   # print(url)
   pageContent = ""
   async with aiohttp.ClientSession(loop = eventLoop) as session:
@@ -101,8 +101,7 @@ async def fetchAsync(url, root, domain, eventLoop, filename):
   parser = MyHTMLParser()
   parser.feed(pageContent)
 
-  absLinks = (defrag(parse.urljoin((domain if link.startswith('/') else url), link)) \
-    for link in parser.foundLinks)
+  absLinks = (defrag(parse.urljoin(url, link)) for link in parser.foundLinks)
   return url, set(link for link in absLinks if os.path.commonprefix((link, root)) == root)
 
 
@@ -115,7 +114,6 @@ def filenames(inputPath):
 class Spider(object):
   def __init__(self, rootUrl, rootDir):
     self.root = rootUrl
-    self.domain = parse.urlunsplit(parse.urlsplit(rootUrl)[:2] + ('','',''))
     self.rootDir = rootDir
 
     # read downloaded urls
@@ -191,7 +189,7 @@ class Spider(object):
         if link not in self.pending:
           self.pending.add(link)
           filename = os.path.join(self.rootDir, makeFilename(link))
-          task = asyncio.ensure_future(fetchAsync(link, self.root, self.domain, eventLoop, filename))
+          task = asyncio.ensure_future(fetchAsync(link, self.root, eventLoop, filename))
           task.add_done_callback(whenDownloaded)
 
 
