@@ -7,7 +7,6 @@ from time import clock
 from itertools import chain
 from urllib import request, parse
 from html.parser import HTMLParser
-from appdirs import user_cache_dir
 from argparse import ArgumentParser
 from asyncio import Queue
 
@@ -94,12 +93,12 @@ async def download_noexcept(url, session, filename):
 
 async def fetchAsync(url, root, eventLoop, filename):
   # print(url)
-  pageContent = ""
+  pageText = ""
   async with aiohttp.ClientSession(loop = eventLoop) as session:
-    pageContent = await download_noexcept(url, session, filename)
+    pageText = await download_noexcept(url, session, filename)
 
   parser = MyHTMLParser()
-  parser.feed(pageContent)
+  parser.feed(pageText)
 
   absLinks = (defrag(parse.urljoin(url, link)) for link in parser.foundLinks)
   return url, set(link for link in absLinks if os.path.commonprefix((link, root)) == root)
@@ -112,27 +111,19 @@ def filenames(inputPath):
 
 
 class Spider(object):
-  def __init__(self, rootUrl, rootDir):
+  def __init__(self, rootUrl, rootDir, cacheFilename):
     self.root = rootUrl
     self.rootDir = rootDir
-
-    # read downloaded urls
-    self.down = set(filenames(rootDir))
-    self.pending = set()
-
-    # read pending urls
-    cacheDir = user_cache_dir("summer18")
-    try:
-      if not os.path.exists(cacheDir):
-        os.makedirs(cacheDir)
-      self.cache = os.path.join(cacheDir, rootDir)
-    except OSError:
-      self.cache = so.path.join("./", rootDir)
-
-    print("cache to: " + self.cache)
+    self.cache = cacheFilename
 
     self.queue = Queue()
     self.queue.put_nowait(rootUrl)
+
+    # read downloaded urls
+    self.down = set(filenames(rootDir))
+
+    # read pending urls
+    self.pending = set()
     try:
       with open(self.cache, 'r') as stream:
         for link in stream.read().strip().split():
@@ -210,20 +201,29 @@ def main():
   args = parser.parse_args()
   rootUrl = canonize(args.url)  
   downloadTo = makeFilename(rootUrl)
-
-  print(downloadTo)
-
   if os.path.exists(downloadTo):
     pass
   else:
     os.mkdir(downloadTo)
 
+  try:
+    from appdirs import user_cache_dir
+    cacheDir = user_cache_dir("summer18")
+    if not os.path.exists(cacheDir):
+      os.makedirs(cacheDir)
+    cacheTo = os.path.join(cacheDir, downloadTo + ".cache")
+  except (ImportError, OSError):
+    cacheTo = os.path.join("./", downloadTo + ".cache")
 
-  # TODO add exception handling like KeyboardInterrupt
+  print("downloading to: " + downloadTo)
+  print("    caching to: " + cacheTo)
+
+
   def handler(loop, context):
     pass
 
-  spider = Spider(rootUrl, downloadTo)
+  started = clock()
+  spider = Spider(rootUrl, downloadTo, cacheTo)
   loop = asyncio.get_event_loop()
   loop.set_exception_handler(handler)
   try:
@@ -232,6 +232,8 @@ def main():
   except KeyboardInterrupt as ex:
     loop.call_exception_handler({"exception": ex})
     print("interrupted")
+
+  print("{:.1f} seconds".format(clock() - started))
 
 
 if __name__ == '__main__': main()
