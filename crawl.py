@@ -23,9 +23,9 @@ def makeFilename(url):
   return re.sub(r'/', '..', re.sub(r'^(\w*?)://', '', url))
 
 
-class MyHTMLParser(HTMLParser):
+class FindLinks(HTMLParser):
   def __init__(self):
-    super(MyHTMLParser, self).__init__()
+    super(FindLinks, self).__init__()
     self.foundLinks = []
 
 
@@ -99,7 +99,7 @@ async def fetchAsync(url, root, eventLoop, filename, tempFilename):
     pageText = await download_noexcept(url, session, tempFilename)
 
   # parse text to find links
-  parser = MyHTMLParser()
+  parser = FindLinks()
   parser.feed(pageText)
   absLinks = (defrag(parse.urljoin(url, link)) for link in parser.foundLinks)
   absLinks = set(link for link in absLinks if os.path.commonprefix((link, root)) == root)
@@ -139,6 +139,8 @@ class Spider(object):
       for linkFile in filenames(self.tempDir):
         if not linkFile.endswith(".links"):
           continue
+        if linkFile[:-6] not in self.down:
+          continue
 
         with open(os.path.join(self.tempDir, linkFile), 'r') as stream:
           for link in stream.read().strip().splitlines():
@@ -176,17 +178,14 @@ class Spider(object):
 
     def whenDownloaded(task):
       thisLink, nextLinks = task.result()
-
       self.pending.remove(thisLink)
       self.down.add(makeFilename(thisLink))
-
       newLinks = (link for link in nextLinks if makeFilename(link) not in self.down)
-
       for link in newLinks:
         self.queue.put_nowait(link)
 
-    while True:
 
+    while True:
       if len(self.pending) >= 100: # too many tasks
         await asyncio.sleep(.01)
 
@@ -199,7 +198,6 @@ class Spider(object):
           tempFilename = os.path.join(self.tempDir, makeFilename(link))
           task = asyncio.ensure_future(fetchAsync(link, self.root, eventLoop, filename, tempFilename))
           task.add_done_callback(whenDownloaded)
-
 
       elif len(self.pending) == 0:
         break
