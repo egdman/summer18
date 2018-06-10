@@ -155,34 +155,38 @@ class Spider(object):
       with open(self.cache, 'r') as stream:
         for link in stream.read().strip().split():
           self.queue.put_nowait(link)
-    except (OSError, UnicodeDecodeError):
+    except OSError:
       pass
 
 
-  async def doCaching(self):
+  def writeCache(self):
+    started = clock()
+    foundLinks = set()
+    while not self.queue.empty():
+      foundLinks.add(self.queue.get_nowait())
+
+    for link in foundLinks:
+      self.queue.put_nowait(link)
+
+    foundLinks = foundLinks.union(self.pending)
+
+    print("down:   {} links".format(len(self.down)))
+    with open(self.cache, 'w') as stream:
+      stream.write('\n'.join(foundLinks))
+
+    print("cached {} in {:.2f} ms".format(len(foundLinks), 1000*(clock() - started)))
+    return len(foundLinks)
+
+
+  async def runCaching(self):
     while True:
       await asyncio.sleep(2)
-
-      started = clock()
-      foundLinks = set()
-      while not self.queue.empty():
-        foundLinks.add(self.queue.get_nowait())
-
-      for link in foundLinks:
-        self.queue.put_nowait(link)
-
-      foundLinks = foundLinks.union(self.pending)
-
-      print("down:   {} links".format(len(self.down)))
-      with open(self.cache, 'w') as stream:
-        for link in foundLinks: stream.write(link + '\n')
-
-      print("cached {} in {:.2f} ms".format(len(foundLinks), 1000*(clock() - started)))
-
+      if not self.writeCache():
+        break
 
 
   async def run(self, eventLoop):
-    asyncio.ensure_future(self.doCaching())
+    cachingTask = asyncio.ensure_future(self.runCaching())
 
     def whenDownloaded(task):
       thisLink, nextLinks = task.result()
@@ -192,23 +196,29 @@ class Spider(object):
       for link in newLinks:
         self.queue.put_nowait(link)
 
-
-    while len(self.pending) or not self.queue.empty():
+    while True:
 
       if len(self.pending) >= 100: # too many tasks
         await asyncio.sleep(.01)
-        continue
 
-      if len(self.pending) == 0 and self.queue.empty():
+      elif not self.queue.empty():
+        link = await self.queue.get()
+
+        if link not in self.pending:
+          self.pending.add(link)
+          filename = os.path.join(self.rootDir, makeFilename(link))
+          task = asyncio.ensure_future(fetchAsync(link, self.root, self.domain, eventLoop, filename))
+          task.add_done_callback(whenDownloaded)
+
+
+      elif len(self.pending) == 0:
         break
-      link = await self.queue.get()
 
-      if link not in self.pending:
-        self.pending.add(link)
-        filename = os.path.join(self.rootDir, makeFilename(link))
-        task = asyncio.ensure_future(fetchAsync(link, self.root, self.domain, eventLoop, filename))
-        task.add_done_callback(whenDownloaded)
+      else:
+        await asyncio.sleep(.01)
 
+    self.writeCache()
+    cachingTask.cancel()
 
 
 def main():
