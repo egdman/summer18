@@ -24,17 +24,14 @@ def makeFilename(url):
 
 
 class MyHTMLParser(HTMLParser):
-  def __init__(self, root):
+  def __init__(self):
     super(MyHTMLParser, self).__init__()
-    self.root = root
     self.foundLinks = []
 
 
   def handle_starttag(self, _, attrs):
-    for link in (value for name, value in attrs if name in ("href", "src")):
-      absLink = defrag(parse.urljoin(self.root, link))
-      if os.path.commonprefix((absLink, self.root)) == self.root:
-        self.foundLinks.append(absLink)
+    self.foundLinks.extend(
+      (value for name, value in attrs if name in ("href", "src")))
 
 
 def canDecode(data, enc):
@@ -94,15 +91,23 @@ async def safeDownloadContent(url, session, filename):
   return ""
 
 
-async def fetchAsync(url, root, eventLoop, filename):
+async def fetchAsync(url, domain, eventLoop, filename):
   # print(url)
   pageContent = ""
   async with aiohttp.ClientSession(loop = eventLoop) as session:
     pageContent = await safeDownloadContent(url, session, filename)
 
-  parser = MyHTMLParser(root)
+  parser = MyHTMLParser()
   parser.feed(pageContent)
-  return url, parser.foundLinks
+
+  foundLinks = []
+  for link in parser.foundLinks:
+    absLink = defrag(parse.urljoin((domain if link.startswith('/') else url), link))
+
+    if os.path.commonprefix((absLink, url)) == url:
+      foundLinks.append(absLink)
+
+  return url, foundLinks
 
 
 
@@ -131,9 +136,11 @@ def filenames(inputPath):
 
 class Spider(object):
   def __init__(self, rootUrl, rootDir):
-    self.root = rootUrl
+    self.domain = parse.urlunsplit(parse.urlsplit(rootUrl)[:2] + ('','',''))
     self.rootDir = rootDir
 
+    print("root   " +rootUrl)
+    print("domain " +self.domain)
     # read downloaded urls
     self.down = set(filenames(rootDir))
     self.pending = set()
@@ -150,14 +157,13 @@ class Spider(object):
     print("cache to: " + self.cache)
 
     self.queue = Queue()
-    self.queue.put_nowait(self.root)
+    self.queue.put_nowait(rootUrl)
     try:
       with open(self.cache, 'r') as stream:
         for link in stream.read().strip().split():
           self.queue.put_nowait(link)
     except (OSError, UnicodeDecodeError):
       pass
-
 
 
   async def doCaching(self):
@@ -205,7 +211,7 @@ class Spider(object):
       if link not in self.pending:
         self.pending.add(link)
         filename = os.path.join(self.rootDir, makeFilename(link))
-        task = asyncio.ensure_future(fetchAsync(link, self.root, eventLoop, filename))
+        task = asyncio.ensure_future(fetchAsync(link, self.domain, eventLoop, filename))
         task.add_done_callback(whenDownloaded)
 
 
