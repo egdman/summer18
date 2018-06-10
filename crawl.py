@@ -93,9 +93,8 @@ async def download_noexcept(url, session, filename):
   return ""
 
 
-async def fetchAsync(url, root, eventLoop, filename):
+async def fetchAsync(url, root, eventLoop, filename, tempFilename):
   # dl to temp file
-  tempFilename = filename + ".__"
   pageText = ""
   async with aiohttp.ClientSession(loop = eventLoop) as session:
     pageText = await download_noexcept(url, session, tempFilename)
@@ -126,14 +125,21 @@ class Spider(object):
   def __init__(self, rootUrl, rootDir, _):
     self.root = rootUrl
     self.rootDir = rootDir
+    self.tempDir = rootDir + ".tempo"
+
+    if not os.path.exists(rootDir):
+      os.mkdir(rootDir)
+
+    if not os.path.exists(self.tempDir):
+      os.makedirs(self.tempDir)
     # self.cache = cacheFilename
 
     self.queue = Queue()
     self.queue.put_nowait(rootUrl)
     self.pending = set()
+    self.down = set()
 
     # read downloaded urls
-    # self.down = set(filenames(rootDir))
 
     # read pending urls
     # try:
@@ -143,48 +149,35 @@ class Spider(object):
     # except OSError:
     #   pass
 
+  async def cleanQueue(self):
+    while True:
+      await asyncio.sleep(2)
+      uniqLinks = set()
+      while not self.queue.empty():
+        uniqLinks.add(self.queue.get_nowait())
 
-  # def writeCache(self):
-  #   started = clock()
-  #   foundLinks = set()
-  #   while not self.queue.empty():
-  #     foundLinks.add(self.queue.get_nowait())
+      for link in uniqLinks:
+        self.queue.put_nowait(link)
 
-  #   for link in foundLinks:
-  #     self.queue.put_nowait(link)
-
-  #   foundLinks = foundLinks.union(self.pending)
-
-  #   # print("down:   {} links".format(len(self.down)))
-  #   with open(self.cache, 'w') as stream:
-  #     stream.write('\n'.join(foundLinks))
-
-  #   print("cached {} in {:.2f} ms".format(len(foundLinks), 1000*(clock() - started)))
-  #   return len(foundLinks)
-
-
-  # async def runCaching(self):
-  #   while True:
-  #     await asyncio.sleep(2)
-  #     self.writeCache()
 
   async def monitor(self):
     while True:
       await asyncio.sleep(2)
-      print("pending {} links".format(len(self.pending)))
+      print("{} down, {} pending".format(len(self.down), len(self.pending)))
   
 
   async def run(self, eventLoop):
     monitorTask = asyncio.ensure_future(self.monitor())
+    cleanTask = asyncio.ensure_future(self.cleanQueue())
 
     def whenDownloaded(task):
       thisLink, nextLinks = task.result()
 
       self.pending.remove(thisLink)
-      newLinks = list(link for link in nextLinks if not \
+      self.down.add(thisLink)
+      newLinks = (link for link in nextLinks if not \
         os.path.exists(os.path.join(self.rootDir, makeFilename(link))))
 
-      # print(str(len(nextLinks)) + " : " + str(len(newLinks)))
       for link in newLinks:
         self.queue.put_nowait(link)
 
@@ -199,7 +192,8 @@ class Spider(object):
         if link not in self.pending:
           self.pending.add(link)
           filename = os.path.join(self.rootDir, makeFilename(link))
-          task = asyncio.ensure_future(fetchAsync(link, self.root, eventLoop, filename))
+          tempFilename = os.path.join(self.tempDir, makeFilename(link))
+          task = asyncio.ensure_future(fetchAsync(link, self.root, eventLoop, filename, tempFilename))
           task.add_done_callback(whenDownloaded)
 
 
@@ -209,8 +203,13 @@ class Spider(object):
       else:
         await asyncio.sleep(.01)
 
-    # self.writeCache()
     monitorTask.cancel()
+    cleanTask.cancel()
+
+    try:
+      shutil.rmtree(self.tempDir)
+    except OSError as ex:
+      print(ex)
 
 
 def main():
@@ -220,10 +219,6 @@ def main():
   args = parser.parse_args()
   rootUrl = canonize(args.url)  
   downloadTo = makeFilename(rootUrl)
-  if os.path.exists(downloadTo):
-    pass
-  else:
-    os.mkdir(downloadTo)
 
   try:
     from appdirs import user_cache_dir
