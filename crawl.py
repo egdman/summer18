@@ -14,9 +14,8 @@ from asyncio import Queue
 def canonize(url):
   return re.sub(r'/+$', '', url.strip()) + '/'
 
-def defrag(link):
-  link, _ = parse.urldefrag(link)
-  return link
+def defrag(url):
+  return parse.urlunsplit(parse.urlsplit(url)[:3] + ('',''))
 
 def makeFilename(url):
   url = canonize(url)[:-1]
@@ -76,7 +75,7 @@ async def downloadAsync(istream, filename):
   return doDecode(fullContent, "utf-8")
 
 
-async def safeDownloadContent(url, session, filename):
+async def download_noexcept(url, session, filename):
   try:
     page = await session.get(url)
 
@@ -95,7 +94,7 @@ async def fetchAsync(url, root, domain, eventLoop, filename):
   # print(url)
   pageContent = ""
   async with aiohttp.ClientSession(loop = eventLoop) as session:
-    pageContent = await safeDownloadContent(url, session, filename)
+    pageContent = await download_noexcept(url, session, filename)
 
   parser = MyHTMLParser()
   parser.feed(pageContent)
@@ -190,6 +189,7 @@ class Spider(object):
 
     def whenDownloaded(task):
       thisLink, nextLinks = task.result()
+
       self.down.add(makeFilename(thisLink))
       self.pending.remove(thisLink)
       newLinks = (link for link in nextLinks if makeFilename(link) not in self.down)
@@ -202,7 +202,7 @@ class Spider(object):
         await asyncio.sleep(.01)
 
       elif not self.queue.empty():
-        link = await self.queue.get()
+        link = defrag(await self.queue.get())
 
         if link not in self.pending:
           self.pending.add(link)
