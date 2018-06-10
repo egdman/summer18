@@ -60,7 +60,6 @@ async def downloadAsync(istream, filename):
 
   firstChunk = await istream.content.read(chunkSz)
   if not canDecode(firstChunk, "utf-8"):
-    with open(filename, 'wb'): pass
     return ""
 
   fullContent = bytes()
@@ -110,8 +109,11 @@ async def fetchAsync(url, root, eventLoop, filename, tempFilename):
   with open(linkFilename, "w") as stream:
     stream.write('\n'.join(absLinks))
   
-  # rename file
-  shutil.move(tempFilename, filename)
+  try:
+    shutil.move(tempFilename, filename)
+  except OSError:
+    pass
+
   return url, absLinks
 
 
@@ -128,13 +130,12 @@ class Spider(object):
     self.tempDir = tempDir
 
     self.queue = Queue()
-    self.queue.put_nowait(rootUrl)
     self.pending = set()
     self.down = set(filenames(self.rootDir))
 
     # read cached links
+    uniqLinks = set([rootUrl])
     try:
-      uniqLinks = set()
       for linkFile in filenames(self.tempDir):
         if not linkFile.endswith(".links"):
           continue
@@ -143,12 +144,13 @@ class Spider(object):
           for link in stream.read().strip().splitlines():
             uniqLinks.add(link)
 
-      for link in uniqLinks:
-        self.queue.put_nowait(link)
-      print("read {} cached links".format(len(uniqLinks)))
-
     except OSError:
       pass
+
+    for link in uniqLinks:
+      if makeFilename(link) not in self.down:
+        self.queue.put_nowait(link)
+
 
 
   async def cleanQueue(self):
@@ -177,8 +179,8 @@ class Spider(object):
 
       self.pending.remove(thisLink)
       self.down.add(makeFilename(thisLink))
-      newLinks = (link for link in nextLinks if not \
-        os.path.exists(os.path.join(self.rootDir, makeFilename(link))))
+
+      newLinks = (link for link in nextLinks if makeFilename(link) not in self.down)
 
       for link in newLinks:
         self.queue.put_nowait(link)
