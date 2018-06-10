@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import sys
 import os
 import re
@@ -86,17 +87,17 @@ async def download_noexcept(url, session, filename):
       page.close()
 
   except Exception as ex:
-    print("while downloading this link: '{}',".format(url))
-    print("this happened: {} : {}".format(type(ex), ex))
-
-  return ""
+    return None
 
 
 async def fetchAsync(url, root, eventLoop, filename, tempFilename):
   # dl to temp file
-  pageText = ""
+  pageText = None
   async with aiohttp.ClientSession(loop = eventLoop) as session:
     pageText = await download_noexcept(url, session, tempFilename)
+
+  if not pageText:
+    return url, []
 
   # parse text to find links
   parser = FindLinks()
@@ -109,6 +110,7 @@ async def fetchAsync(url, root, eventLoop, filename, tempFilename):
   with open(linkFilename, "w") as stream:
     stream.write('\n'.join(absLinks))
   
+  # rename temp file to permanent
   try:
     shutil.move(tempFilename, filename)
   except OSError:
