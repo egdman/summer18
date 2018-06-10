@@ -1,3 +1,4 @@
+import sys
 import os
 import re
 import asyncio
@@ -30,7 +31,7 @@ class MyHTMLParser(HTMLParser):
 
   def handle_starttag(self, _, attrs):
     self.foundLinks.extend(
-      (value for name, value in attrs if value and name in ("href", "src")))
+      (value.strip() for name, value in attrs if value and name in ("href", "src")))
 
 
 def canDecode(data, enc):
@@ -85,7 +86,8 @@ async def download_noexcept(url, session, filename):
       page.close()
 
   except Exception as ex:
-    print(type(ex), ex, url)
+    print("while downloading this link: '{}',".format(url))
+    print("this happened: {} : {}".format(type(ex), ex))
 
   return ""
 
@@ -220,10 +222,18 @@ def main():
 
 
   # TODO add exception handling like KeyboardInterrupt
+  def handler(loop, context):
+    pass
+
   spider = Spider(rootUrl, downloadTo)
   loop = asyncio.get_event_loop()
-  loop.run_until_complete(spider.run(loop))
+  loop.set_exception_handler(handler)
+  try:
+    loop.run_until_complete(spider.run(loop))
+    print("done")
+  except KeyboardInterrupt as ex:
+    loop.call_exception_handler({"exception": ex})
+    print("interrupted")
 
-  print("done")
 
 if __name__ == '__main__': main()
