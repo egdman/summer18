@@ -1,26 +1,26 @@
 import os
 import re
+import asyncio
+import aiohttp
+from time import clock
+from itertools import chain
 from urllib import request, parse
 from html.parser import HTMLParser
 from appdirs import user_cache_dir
 from argparse import ArgumentParser
-import asyncio
 from asyncio import Queue
-import aiohttp
-from time import clock
 
-
-def makeFilename(url):
-  url = canonize(url)[:-1]
-  return re.sub(r'/', '..', re.sub(r'^(\w*?)://', '', url))
 
 def canonize(url):
   return re.sub(r'/+$', '', url.strip()) + '/'
 
-
 def defrag(link):
   link, _ = parse.urldefrag(link)
   return link
+
+def makeFilename(url):
+  url = canonize(url)[:-1]
+  return re.sub(r'/', '..', re.sub(r'^(\w*?)://', '', url))
 
 
 class MyHTMLParser(HTMLParser):
@@ -30,7 +30,7 @@ class MyHTMLParser(HTMLParser):
     self.foundLinks = []
 
 
-  def handle_starttag(self, tag, attrs):
+  def handle_starttag(self, _, attrs):
     for link in (value for name, value in attrs if name in ("href", "src")):
       absLink = defrag(parse.urljoin(self.root, link))
       if os.path.commonprefix((absLink, self.root)) == self.root:
@@ -58,25 +58,28 @@ def doDecode(data, enc):
     return ""
 
 
-async def downloadAsync(stream, filename):
-  header = stream.headers
-  try:
-    contentSize = int(header["Content-Length"])
-  except Exception:
-    contentSize = 0
+async def downloadAsync(istream, filename):
+  chunkSz = 1024
 
-  # print("size: {}".format(contentSize))
-
-  firstChunk = await stream.content.read(1024)
-
-  if canDecode(firstChunk, "utf-8"):
-    content = firstChunk + await stream.content.read()
-    return doDecode(content, "utf-8")
-  else:
+  firstChunk = await istream.content.read(chunkSz)
+  if not canDecode(firstChunk, "utf-8"):
     return ""
 
+  fullContent = bytes()
+  with open(filename, 'wb') as ostream:
+    ostream.write(firstChunk)
+    fullContent += firstChunk
+    while True:
+      chunk = await istream.content.read(chunkSz)
+      if not chunk:
+        break
+      ostream.write(chunk)
+      fullContent += chunk
 
-async def _safeDownloadContent(url, session, filename):
+  return doDecode(fullContent, "utf-8")
+
+
+async def safeDownloadContent(url, session, filename):
   try:
     page = await session.get(url)
 
@@ -95,7 +98,7 @@ async def fetchAsync(url, root, eventLoop, filename):
   # print(url)
   pageContent = ""
   async with aiohttp.ClientSession(loop = eventLoop) as session:
-    pageContent = await _safeDownloadContent(url, session, filename)
+    pageContent = await safeDownloadContent(url, session, filename)
 
   parser = MyHTMLParser(root)
   parser.feed(pageContent)
@@ -224,8 +227,7 @@ def main():
   # TODO add exception handling like KeyboardInterrupt
   spider = Spider(rootUrl, downloadTo)
   loop = asyncio.get_event_loop()
-  future = asyncio.ensure_future(spider.run(loop))
-  loop.run_until_complete(future)
+  loop.run_until_complete(spider.run(loop))
 
   print("done")
 
