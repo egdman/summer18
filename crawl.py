@@ -11,6 +11,7 @@ from urllib import request, parse
 from html.parser import HTMLParser
 from argparse import ArgumentParser
 from asyncio import Queue
+import multiprocessing as mp
 
 
 def canonize(url):
@@ -61,7 +62,7 @@ async def downloadAsync(istream, filename):
 
   firstChunk = await istream.content.read(chunkSz)
   if not canDecode(firstChunk, "utf-8"):
-    return ""
+    return bytes()
 
   fullContent = bytes()
   with open(filename, 'wb') as ostream:
@@ -74,7 +75,7 @@ async def downloadAsync(istream, filename):
       ostream.write(chunk)
       fullContent += chunk
 
-  return doDecode(fullContent, "utf-8")
+  return fullContent
 
 
 async def download_noexcept(url, session, filename):
@@ -90,33 +91,9 @@ async def download_noexcept(url, session, filename):
     return None
 
 
-async def fetchAsync(url, root, eventLoop, filename, tempFilename):
-  # dl to temp file
-  pageText = None
+async def fetchAsync(url, eventLoop, filename):
   async with aiohttp.ClientSession(loop = eventLoop) as session:
-    pageText = await download_noexcept(url, session, tempFilename)
-
-  if not pageText:
-    return url, []
-
-  # parse text to find links
-  parser = FindLinks()
-  parser.feed(pageText)
-  absLinks = (defrag(parse.urljoin(url, link)) for link in parser.foundLinks)
-  absLinks = set(link for link in absLinks if os.path.commonprefix((link, root)) == root)
-
-  # write links to disk
-  linkFilename = tempFilename + ".links"
-  with open(linkFilename, "w") as stream:
-    stream.write('\n'.join(absLinks))
-  
-  # rename temp file to permanent
-  try:
-    shutil.move(tempFilename, filename)
-  except OSError:
-    pass
-
-  return url, absLinks
+    return url, await download_noexcept(url, session, filename)
 
 
 def filenames(inputPath):
@@ -131,7 +108,8 @@ class Spider(object):
     self.rootDir = rootDir
     self.tempDir = tempDir
 
-    self.queue = Queue()
+    self.linkQueue = mp.Queue()
+    self.toParse = mp.Queue()
     self.pending = set()
     self.down = set(filenames(self.rootDir))
 
@@ -153,19 +131,33 @@ class Spider(object):
 
     for link in uniqLinks:
       if makeFilename(link) not in self.down:
-        self.queue.put_nowait(link)
+        self.linkQueue.put_nowait(link)
 
 
-
-  async def cleanQueue(self):
+  def parseText(self, rootUrl, rootDir, tempDir):
     while True:
-      await asyncio.sleep(2)
-      uniqLinks = set()
-      while not self.queue.empty():
-        uniqLinks.add(self.queue.get_nowait())
+      url, content = self.toParse.get()
+      text = doDecode(content, "utf-8")
+      parser = FindLinks()
+      parser.feed(text)
+      absLinks = (defrag(parse.urljoin(url, link)) for link in parser.foundLinks)
+      absLinks = set(link for link in absLinks if os.path.commonprefix((link, rootUrl)) == rootUrl)
 
-      for link in uniqLinks:
-        self.queue.put_nowait(link)
+      # write links to disk
+      filename = makeFilename(url)
+      tempFilename = os.path.join(tempDir, filename)
+      linkFilename = tempFilename + ".links"
+      with open(linkFilename, "w") as stream:
+        stream.write('\n'.join(absLinks))
+    
+      # rename temp file to permanent
+      try:
+        shutil.move(tempFilename, os.path.join(rootDir, filename))
+      except OSError:
+        pass
+
+      for link in absLinks:
+        self.linkQueue.put_nowait(link)
 
 
   async def monitor(self):
@@ -176,39 +168,42 @@ class Spider(object):
 
   async def run(self, eventLoop):
     monitorTask = asyncio.ensure_future(self.monitor())
-    cleanTask = asyncio.ensure_future(self.cleanQueue())
+    # cleanTask = asyncio.ensure_future(self.cleanQueue())
 
     def whenDownloaded(task):
-      thisLink, nextLinks = task.result()
+      thisLink, content = task.result()
       self.pending.remove(thisLink)
-      self.down.add(makeFilename(thisLink))
-      newLinks = (link for link in nextLinks if makeFilename(link) not in self.down)
-      for link in newLinks:
-        self.queue.put_nowait(link)
+      if content:
+        self.toParse.put_nowait((thisLink, content))
 
+    parsers = list(mp.Process(target = self.parseText, args = (self.root, self.rootDir, self.tempDir)) for _ in range(4))
+    for parser in parsers:
+      parser.start()
 
+    print("Starting")
     while True:
+      await asyncio.sleep(.01)
       if len(self.pending) >= 100: # too many tasks
-        await asyncio.sleep(.01)
+        continue
 
-      elif not self.queue.empty():
-        link = defrag(await self.queue.get())
+      if self.linkQueue.empty():
+        continue
 
-        if link not in self.pending:
-          self.pending.add(link)
-          filename = os.path.join(self.rootDir, makeFilename(link))
-          tempFilename = os.path.join(self.tempDir, makeFilename(link))
-          task = asyncio.ensure_future(fetchAsync(link, self.root, eventLoop, filename, tempFilename))
-          task.add_done_callback(whenDownloaded)
+      link = defrag(self.linkQueue.get())
+      if link not in self.pending and not os.path.exists(os.path.join(self.rootDir, makeFilename(link))):
+        self.pending.add(link)
+        tempFilename = os.path.join(self.tempDir, makeFilename(link))
+        task = asyncio.ensure_future(fetchAsync(link, eventLoop, tempFilename))
+        task.add_done_callback(whenDownloaded)
 
-      elif len(self.pending) == 0:
-        break
+      # elif len(self.pending) == 0:
+      #   break
 
-      else:
-        await asyncio.sleep(.01)
+      # else:
+      #   await asyncio.sleep(.01)
 
     monitorTask.cancel()
-    cleanTask.cancel()
+    # cleanTask.cancel()
     print("{} down".format(len(self.down)))
 
 
