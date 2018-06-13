@@ -91,11 +91,6 @@ async def download_noexcept(url, session, filename):
     return None
 
 
-async def fetchAsync(url, eventLoop, filename):
-  async with aiohttp.ClientSession(loop = eventLoop) as session:
-    return url, await download_noexcept(url, session, filename)
-
-
 def filenames(inputPath):
   for _, _, filenames in os.walk(inputPath):
     for filename in filenames:
@@ -153,6 +148,7 @@ class Spider(object):
       # rename temp file to permanent
       try:
         shutil.move(tempFilename, os.path.join(rootDir, filename))
+        print("down: " + url)
       except OSError:
         pass
 
@@ -160,29 +156,40 @@ class Spider(object):
         self.linkQueue.put_nowait(link)
 
 
+
+
+  async def fetchAsync(self, url, eventLoop, filename):
+    async with aiohttp.ClientSession(loop = eventLoop) as session:
+      content = await download_noexcept(url, session, filename)
+
+    self.pending.remove(url)
+    if content:
+      self.toParse.put_nowait((url, content))
+
+
   async def monitor(self):
     while True:
-      await asyncio.sleep(2)
-      print("{} down, {} pending".format(len(self.down), len(self.pending)))
+      await asyncio.sleep(.5)
+      print("{} pending".format(len(self.pending)))
   
 
   async def run(self, eventLoop):
-    monitorTask = asyncio.ensure_future(self.monitor())
+    # monitorTask = asyncio.ensure_future(self.monitor())
     # cleanTask = asyncio.ensure_future(self.cleanQueue())
 
-    def whenDownloaded(task):
-      thisLink, content = task.result()
-      self.pending.remove(thisLink)
-      if content:
-        self.toParse.put_nowait((thisLink, content))
+    parsers = list(mp.Process(
+      target = self.parseText,
+      args = (self.root, self.rootDir, self.tempDir)) for _ in range(4))
 
-    parsers = list(mp.Process(target = self.parseText, args = (self.root, self.rootDir, self.tempDir)) for _ in range(4))
-    for parser in parsers:
-      parser.start()
+    for parser in parsers: parser.daemon = True
+    for parser in parsers: parser.start()
 
-    print("Starting")
     while True:
       await asyncio.sleep(.01)
+
+      # if len(self.pending) == 0 and self.toParse.empty() and self.linkQueue.empty():
+        # break
+
       if len(self.pending) >= 100: # too many tasks
         continue
 
@@ -193,8 +200,7 @@ class Spider(object):
       if link not in self.pending and not os.path.exists(os.path.join(self.rootDir, makeFilename(link))):
         self.pending.add(link)
         tempFilename = os.path.join(self.tempDir, makeFilename(link))
-        task = asyncio.ensure_future(fetchAsync(link, eventLoop, tempFilename))
-        task.add_done_callback(whenDownloaded)
+        asyncio.ensure_future(self.fetchAsync(link, eventLoop, tempFilename))
 
       # elif len(self.pending) == 0:
       #   break
@@ -202,7 +208,7 @@ class Spider(object):
       # else:
       #   await asyncio.sleep(.01)
 
-    monitorTask.cancel()
+    # monitorTask.cancel()
     # cleanTask.cancel()
     print("{} down".format(len(self.down)))
 
